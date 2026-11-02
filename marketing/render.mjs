@@ -36,7 +36,8 @@ const pieceSvg = {}
 for (const color of ['w', 'b']) {
   for (const type of ['K', 'Q', 'R', 'B', 'N', 'P']) {
     const raw = readFileSync(join(ROOT, 'assets/pieces', `${color}${type}.svg`), 'utf8')
-    pieceSvg[color + type.toLowerCase()] = raw.slice(raw.indexOf('>') + 1, raw.lastIndexOf('</svg>'))
+    // Inhalt des <svg>-Elements (ohne XML-Prolog und DOCTYPE der Originaldateien)
+    pieceSvg[color + type.toLowerCase()] = raw.slice(raw.indexOf('>', raw.indexOf('<svg')) + 1, raw.lastIndexOf('</svg>'))
   }
 }
 
