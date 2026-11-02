@@ -1,87 +1,44 @@
+import { checkResponse, enqueue, lichessFetch, persistentCache } from './lichessQueue'
 import type { Settings } from './types'
 
-// Client für den Lichess Opening Explorer (https://explorer.lichess.org).
-// Lichess-Regeln: immer nur eine Anfrage gleichzeitig, bei HTTP 429 mindestens eine Minute warten.
+// Client für den Lichess Opening Explorer (https://explorer.lichess.org, Login erforderlich).
 
 export type ExplorerMove = { uci: string; san: string; white: number; draws: number; black: number }
 export type ExplorerResult = { total: number; moves: ExplorerMove[]; opening: { eco: string; name: string } | null }
 
-export class ExplorerError extends Error {
-  readonly kind: 'auth' | 'rate-limit' | 'network'
-  constructor(kind: ExplorerError['kind'], message: string) {
-    super(message)
-    this.kind = kind
-  }
-}
+export type ExplorerQuery = Pick<Settings, 'source' | 'ratings' | 'speeds'> & { fen: string }
 
-type Query = Pick<Settings, 'source' | 'ratings' | 'speeds'> & { fen: string }
-
-const CACHE_KEY = 'chesstrainer:explorer-cache:v1'
-const CACHE_LIMIT = 1500
-const RATE_LIMIT_PAUSE_MS = 60_000
-
-let cache: Map<string, ExplorerResult> | null = null
-let queue: Promise<unknown> = Promise.resolve()
-let blockedUntil = 0
+const cache = persistentCache<ExplorerResult>('chesstrainer:explorer-cache:v1', 1500)
 const inflight = new Map<string, Promise<ExplorerResult>>()
 
-function getCache(): Map<string, ExplorerResult> {
-  if (!cache) {
-    try {
-      cache = new Map(JSON.parse(localStorage.getItem(CACHE_KEY) ?? '[]'))
-    } catch {
-      cache = new Map()
-    }
-  }
-  return cache
-}
-
-function storeInCache(key: string, result: ExplorerResult) {
-  const c = getCache()
-  c.delete(key)
-  c.set(key, result)
-  // Älteste Einträge zuerst verwerfen (Map behält die Einfügereihenfolge).
-  while (c.size > CACHE_LIMIT) c.delete(c.keys().next().value!)
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify([...c]))
-  } catch {
-    // Speicher voll: Cache bleibt nur im Arbeitsspeicher
-  }
-}
-
-function cacheKey(q: Query): string {
+function cacheKey(q: ExplorerQuery): string {
   return q.source === 'masters'
     ? `masters|${q.fen}`
     : `lichess|${[...q.ratings].sort().join(',')}|${[...q.speeds].sort().join(',')}|${q.fen}`
 }
 
-export function cachedExplorer(q: Query): ExplorerResult | undefined {
-  return getCache().get(cacheKey(q))
+export function cachedExplorer(q: ExplorerQuery): ExplorerResult | undefined {
+  return cache.get(cacheKey(q))
 }
 
-export function fetchExplorer(q: Query, token: string): Promise<ExplorerResult> {
+export function fetchExplorer(q: ExplorerQuery, token: string): Promise<ExplorerResult> {
   const key = cacheKey(q)
-  const hit = getCache().get(key)
+  const hit = cache.get(key)
   if (hit) return Promise.resolve(hit)
   const pending = inflight.get(key)
   if (pending) return pending
 
-  const request = queue.then(() => requestExplorer(q, token))
-  queue = request.catch(() => {})
-  const tracked = request
+  const request = enqueue(() => requestExplorer(q, token))
     .then((result) => {
-      storeInCache(key, result)
+      cache.set(key, result)
       return result
     })
     .finally(() => inflight.delete(key))
-  inflight.set(key, tracked)
-  return tracked
+  inflight.set(key, request)
+  return request
 }
 
-async function requestExplorer(q: Query, token: string): Promise<ExplorerResult> {
-  if (Date.now() < blockedUntil) {
-    throw new ExplorerError('rate-limit', 'Lichess-Limit erreicht – kurze Pause, gleich geht es weiter.')
-  }
+async function requestExplorer(q: ExplorerQuery, token: string): Promise<ExplorerResult> {
   const params = new URLSearchParams({ fen: q.fen, moves: '12', topGames: '0' })
   if (q.source === 'lichess') {
     params.set('variant', 'standard')
@@ -89,21 +46,12 @@ async function requestExplorer(q: Query, token: string): Promise<ExplorerResult>
     params.set('ratings', q.ratings.join(','))
     params.set('speeds', q.speeds.join(','))
   }
-
-  let res: Response
-  try {
-    res = await fetch(`https://explorer.lichess.org/${q.source}?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-  } catch {
-    throw new ExplorerError('network', 'Keine Verbindung zur Lichess-Datenbank.')
-  }
-  if (res.status === 429) {
-    blockedUntil = Date.now() + RATE_LIMIT_PAUSE_MS
-    throw new ExplorerError('rate-limit', 'Lichess-Limit erreicht – eine Minute Pause.')
-  }
-  if (res.status === 401) throw new ExplorerError('auth', 'Lichess-Anmeldung abgelaufen.')
-  if (!res.ok) throw new ExplorerError('network', `Lichess-Datenbank nicht erreichbar (${res.status}).`)
+  const res = await lichessFetch(
+    `https://explorer.lichess.org/${q.source}?${params}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+    'der Lichess-Datenbank',
+  )
+  checkResponse(res, 'Lichess-Datenbank')
 
   const data = (await res.json()) as {
     white: number

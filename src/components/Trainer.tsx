@@ -5,6 +5,7 @@ import { chooseOpponentMove } from '../lib/opponent'
 import { positionAfter, positionKey } from '../lib/repertoire'
 import type { Store } from '../lib/storage'
 import type { LineProgress, Repertoire, Settings } from '../lib/types'
+import { CandidatePanel } from './CandidatePanel'
 import { ExplorerPanel } from './ExplorerPanel'
 
 const OPPONENT_DELAY_MS = 450
@@ -30,6 +31,8 @@ export function Trainer({ repertoire: rep, progress, settings, token, store, onA
   const [selected, setSelected] = useState<Square | null>(null)
   const [failedKeys, setFailedKeys] = useState<Set<string>>(new Set())
   const [wrongMove, setWrongMove] = useState<string | null>(null)
+  /** In neuen Stellungen: gewählter Zug, der erst nach Bestätigung gespeichert wird. */
+  const [pending, setPending] = useState<string | null>(null)
   const [stats, setStats] = useState<Stats>({ correct: 0, mistakes: 0, learned: 0 })
   const [stopReason, setStopReason] = useState<string | null>(null)
 
@@ -90,16 +93,40 @@ export function Trainer({ repertoire: rep, progress, settings, token, store, onA
     setStats((s) => ({ ...s, mistakes: s.mistakes + 1 }))
   }
 
+  function arrowFor(san: string, color: string): Arrow {
+    const move = new Chess(game.fen()).move(san)
+    return { startSquare: move.from, endSquare: move.to, color }
+  }
+
   function expectedArrow(): Arrow | null {
-    if (!expected) return null
-    const move = new Chess(game.fen()).move(expected)
-    return { startSquare: move.from, endSquare: move.to, color: 'rgba(40, 160, 90, 0.85)' }
+    return expected ? arrowFor(expected, 'rgba(40, 160, 90, 0.85)') : null
   }
 
   function play(san: string) {
     setHint(null)
     setWrongMove(null)
+    setPending(null)
     setHistory((h) => [...h, san])
+  }
+
+  function selectCandidate(san: string) {
+    setPending(san)
+    setHint(arrowFor(san, 'rgba(80, 140, 255, 0.85)'))
+  }
+
+  function confirmPending() {
+    if (!pending) return
+    store.setUserMove(rep.id, key, pending)
+    store.recordCard(rep.id, key, true)
+    setStats((s) => ({ ...s, learned: s.learned + 1 }))
+    setFeedback({ kind: 'good', text: `Neu im Repertoire: ${pending}` })
+    play(pending)
+  }
+
+  function skipVariation() {
+    setHint(null)
+    setPending(null)
+    setStopReason('Variante übersprungen – nichts gespeichert.')
   }
 
   function tryMove(from: Square, to: Square): boolean {
@@ -110,12 +137,9 @@ export function Trainer({ repertoire: rep, progress, settings, token, store, onA
     const move = candidates.find((m) => m.san === expected) ?? candidates.find((m) => !m.promotion || m.promotion === 'q')!
 
     if (!expected) {
-      store.setUserMove(rep.id, key, move.san)
-      store.recordCard(rep.id, key, true)
-      setStats((s) => ({ ...s, learned: s.learned + 1 }))
-      setFeedback({ kind: 'good', text: `Neu im Repertoire: ${move.san}` })
-      play(move.san)
-      return true
+      // Neue Stellung: nur vormerken, gespeichert wird erst nach Bestätigung.
+      selectCandidate(move.san)
+      return false
     }
 
     if (move.san === expected) {
@@ -178,7 +202,12 @@ export function Trainer({ repertoire: rep, progress, settings, token, store, onA
         text: `${endReason} ${stats.correct} richtig, ${stats.mistakes} Fehler, ${stats.learned} neu gelernt.`,
       }
     : learning
-      ? { kind: 'info', text: 'Neue Stellung! Was spielst du hier? Dein Zug wird ins Repertoire übernommen.' }
+      ? {
+          kind: 'info',
+          text: pending
+            ? `${pending} ins Repertoire aufnehmen? Prüfe die Bewertung unten.`
+            : 'Neue Stellung – noch nicht in deinem Repertoire. Wähle einen Zug; gespeichert wird erst nach Bestätigung.',
+        }
       : feedback
 
   return (
@@ -216,6 +245,13 @@ export function Trainer({ repertoire: rep, progress, settings, token, store, onA
             <button onClick={onExit}>Übersicht</button>
             <button className="primary" onClick={onNext}>Nächste Runde</button>
           </>
+        ) : learning ? (
+          <>
+            <button onClick={skipVariation}>Überspringen</button>
+            <button className="primary" onClick={confirmPending} disabled={!pending}>
+              {pending ? `${pending} ins Repertoire` : 'Zug wählen …'}
+            </button>
+          </>
         ) : (
           <>
             {wrongMove ? (
@@ -230,8 +266,20 @@ export function Trainer({ repertoire: rep, progress, settings, token, store, onA
 
       <MoveList moves={history} />
 
+      {learning && (
+        <CandidatePanel
+          fen={game.fen()}
+          color={rep.color}
+          settings={settings}
+          token={token}
+          onAuthError={onAuthError}
+          selected={pending}
+          onSelect={selectCandidate}
+        />
+      )}
+
       {/* Statistik nur zeigen, wenn sie die Antwort nicht verrät. */}
-      {(learning || done || !userTurn) && (
+      {(done || !userTurn) && (
         <ExplorerPanel
           fen={game.fen()}
           settings={settings}

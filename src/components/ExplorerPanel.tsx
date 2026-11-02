@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { cachedExplorer, ExplorerError, fetchExplorer, moveTotal, type ExplorerResult } from '../lib/explorer'
+import { moveTotal } from '../lib/explorer'
 import type { Settings } from '../lib/types'
+import { useExplorer } from '../lib/useLichessData'
 
 type Props = {
   fen: string
@@ -11,32 +11,8 @@ type Props = {
   repertoireMove?: string
 }
 
-type Fetched = { key: string; result: ExplorerResult | null; error: string | null }
-
 export function ExplorerPanel({ fen, settings, token, onAuthError, repertoireMove }: Props) {
-  const { source, ratings, speeds } = settings
-  const key = `${source}|${ratings}|${speeds}|${fen}`
-  const cached = cachedExplorer({ source, ratings, speeds, fen })
-  const [fetched, setFetched] = useState<Fetched | null>(null)
-
-  useEffect(() => {
-    if (cached || !token) return
-    let cancelled = false
-    fetchExplorer({ source, ratings, speeds, fen }, token)
-      .then((result) => !cancelled && setFetched({ key, result, error: null }))
-      .catch((e: unknown) => {
-        if (cancelled) return
-        if (e instanceof ExplorerError && e.kind === 'auth') onAuthError()
-        setFetched({ key, result: null, error: e instanceof Error ? e.message : 'Fehler beim Laden.' })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [key, cached, source, ratings, speeds, fen, token, onAuthError])
-
-  const current = fetched?.key === key ? fetched : null
-  const result = cached ?? current?.result ?? null
-  const error = current?.error ?? null
+  const { data: result, loading, error } = useExplorer(fen, settings, token, onAuthError)
   const sourceLabel = settings.source === 'masters' ? 'Meisterpartien' : 'Lichess-Partien'
 
   return (
@@ -51,7 +27,7 @@ export function ExplorerPanel({ fen, settings, token, onAuthError, repertoireMov
         </div>
       )}
       {!token && !result && <p className="muted small">Melde dich bei Lichess an, um Statistiken zu sehen.</p>}
-      {token && !result && !error && <p className="muted small">Lade …</p>}
+      {loading && <p className="muted small">Lade …</p>}
       {error && <p className="muted small">{error}</p>}
       {result && result.total === 0 && <p className="muted small">Keine Partien in dieser Stellung.</p>}
       {result && result.total > 0 && (

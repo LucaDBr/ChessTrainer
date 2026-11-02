@@ -333,3 +333,31 @@ footer {
 .wdl-bar .b {
   background: #333;
 }
+
+.explorer-table th {
+  text-align: left;
+  font-weight: normal;
+  padding: 0 6px 4px 0;
+}
+.candidates tbody tr {
+  cursor: pointer;
+}
+.candidates tbody tr:hover,
+.candidates tbody tr.selected {
+  background: rgba(80, 140, 255, 0.15);
+}
+.candidates tbody tr.selected .san {
+  font-weight: 600;
+}
+.feedback.verdict-good {
+  border-color: var(--accent);
+}
+.feedback.verdict-dubious {
+  border-color: #e0a030;
+}
+.feedback.verdict-bad {
+  border-color: var(--bad);
+}
+.hint-text {
+  margin: 10px 0 0;
+}

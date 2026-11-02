@@ -1,5 +1,6 @@
 import { Chess } from 'chess.js'
-import { cachedExplorer, ExplorerError, fetchExplorer, moveTotal } from './explorer'
+import { cachedExplorer, fetchExplorer, moveTotal } from './explorer'
+import { LichessError } from './lichessQueue'
 import { cardId, positionKey } from './repertoire'
 import { isDue } from './srs'
 import type { LineProgress, Repertoire, Settings } from './types'
@@ -10,7 +11,7 @@ export type OpponentChoice = {
   share: number | null
 }
 
-export type OpponentResult = { choice: OpponentChoice | null; warning: ExplorerError | null }
+export type OpponentResult = { choice: OpponentChoice | null; warning: LichessError | null }
 
 type Candidate = OpponentChoice & { weight: number }
 
@@ -32,14 +33,14 @@ export async function chooseOpponentMove(
   const key = positionKey(game)
   const query = { ...settings, fen: game.fen() }
   let candidates: Candidate[] = []
-  let warning: ExplorerError | null = null
+  let warning: LichessError | null = null
 
   let result = cachedExplorer(query)
   if (!result && token) {
     try {
       result = await fetchExplorer(query, token)
     } catch (e) {
-      warning = e instanceof ExplorerError ? e : new ExplorerError('network', 'Lichess-Datenbank nicht erreichbar.')
+      warning = e instanceof LichessError ? e : new LichessError('network', 'Lichess-Datenbank nicht erreichbar.')
     }
   }
   if (result && result.total > 0) {
