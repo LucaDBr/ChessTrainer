@@ -1,51 +1,36 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useState } from 'react'
 import { ImportForm } from './components/ImportForm'
 import { InstallHint } from './components/InstallHint'
+import { LichessLogin } from './components/LichessLogin'
+import { SettingsPanel } from './components/SettingsPanel'
 import { Trainer } from './components/Trainer'
-import { builtinLines } from './data/repertoires'
-import { isDue, useStoredState } from './lib/storage'
-import type { Line } from './lib/types'
+import { useLichessAuth } from './lib/lichessAuth'
+import { repertoireStats } from './lib/repertoire'
+import { useStoredState } from './lib/storage'
+import type { Color } from './lib/types'
 
-type Session = { queue: string[]; index: number }
+type Session = { repertoireId: string; round: number }
 
 export default function App() {
   const store = useStoredState()
-  const { progress, customLines, recordResult } = store
+  const auth = useLichessAuth()
   const [session, setSession] = useState<Session | null>(null)
+  const [newName, setNewName] = useState('')
+  const [newColor, setNewColor] = useState<Color>('white')
 
-  const lines = useMemo(() => [...builtinLines, ...customLines], [customLines])
-  const lineById = useMemo(() => new Map(lines.map((l) => [l.id, l])), [lines])
-
-  const repertoires = useMemo(() => {
-    const groups = new Map<string, Line[]>()
-    for (const line of lines) groups.set(line.repertoire, [...(groups.get(line.repertoire) ?? []), line])
-    return [...groups.entries()]
-  }, [lines])
-
-  const dueIds = lines.filter((l) => isDue(progress[l.id])).map((l) => l.id)
-
-  function start(queue: string[]) {
-    if (queue.length > 0) setSession({ queue, index: 0 })
-  }
-
-  const currentId = session?.queue[session.index]
-  const handleComplete = useCallback(
-    (mistakes: number) => {
-      if (currentId) recordResult(currentId, mistakes)
-    },
-    [currentId, recordResult],
-  )
-
-  if (session && currentId) {
-    const line = lineById.get(currentId)!
-    const hasNext = session.index + 1 < session.queue.length
+  const active = session && store.repertoires.find((r) => r.id === session.repertoireId)
+  if (session && active) {
     return (
       <main>
         <Trainer
-          key={`${currentId}-${session.index}`}
-          line={line}
-          onComplete={handleComplete}
-          onNext={() => (hasNext ? setSession({ ...session, index: session.index + 1 }) : setSession(null))}
+          key={`${active.id}-${session.round}`}
+          repertoire={active}
+          progress={store.progress}
+          settings={store.settings}
+          token={auth.token}
+          store={store}
+          onAuthError={auth.invalidate}
+          onNext={() => setSession({ ...session, round: session.round + 1 })}
           onExit={() => setSession(null)}
         />
       </main>
@@ -60,46 +45,74 @@ export default function App() {
       </header>
 
       <InstallHint />
+      <LichessLogin auth={auth} />
 
-      <section className="card due-card">
-        <div>
-          <strong>{dueIds.length}</strong> von {lines.length} Linien fällig
-        </div>
-        <button className="primary" disabled={dueIds.length === 0} onClick={() => start(dueIds)}>
-          Fällige trainieren
-        </button>
-      </section>
+      {store.repertoires.map((rep) => {
+        const stats = repertoireStats(rep, store.progress)
+        return (
+          <section key={rep.id} className="card">
+            <div className="card-title">
+              <div>
+                <h2>{rep.name}</h2>
+                <div className="muted small">
+                  {rep.color === 'white' ? 'Weiß' : 'Schwarz'} · {stats.positions} Stellungen
+                </div>
+              </div>
+              <button
+                className="link danger"
+                aria-label="Repertoire löschen"
+                onClick={() => confirm(`„${rep.name}“ wirklich löschen?`) && store.deleteRepertoire(rep.id)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="rep-footer">
+              <span className="badges">
+                {stats.due > 0 && <span className="badge due">{stats.due} fällig</span>}
+                {stats.fresh > 0 && <span className="badge">{stats.fresh} neu</span>}
+                {stats.due === 0 && stats.fresh === 0 && stats.positions > 0 && <span className="badge">alles gelernt</span>}
+              </span>
+              <button className="primary" onClick={() => setSession({ repertoireId: rep.id, round: 0 })}>
+                Trainieren
+              </button>
+            </div>
+          </section>
+        )
+      })}
 
-      {repertoires.map(([name, group]) => (
-        <section key={name} className="card">
-          <div className="card-title">
-            <h2>{name}</h2>
-            <button onClick={() => start(group.map((l) => l.id))}>Alle üben</button>
+      <details className="card">
+        <summary>
+          <h2>Neues Repertoire</h2>
+        </summary>
+        <form
+          className="import-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            store.createRepertoire(newName.trim(), newColor)
+            setNewName('')
+          }}
+        >
+          <input placeholder="Name, z. B. Caro-Kann" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <div className="segmented">
+            <label>
+              <input type="radio" checked={newColor === 'white'} onChange={() => setNewColor('white')} /> Ich spiele Weiß
+            </label>
+            <label>
+              <input type="radio" checked={newColor === 'black'} onChange={() => setNewColor('black')} /> Ich spiele Schwarz
+            </label>
           </div>
-          <ul className="line-list">
-            {group.map((line) => {
-              const p = progress[line.id]
-              return (
-                <li key={line.id}>
-                  <button className="line-button" onClick={() => start([line.id])}>
-                    <span>{line.name}</span>
-                    <span className={`badge ${isDue(p) ? 'due' : ''}`}>
-                      {!p ? 'neu' : isDue(p) ? 'fällig' : `Stufe ${p.box}`}
-                    </span>
-                  </button>
-                  {line.id.startsWith('custom-') && (
-                    <button className="link danger" onClick={() => store.removeCustomLine(line.id)} aria-label="Löschen">
-                      ✕
-                    </button>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </section>
-      ))}
+          <p className="muted small">
+            Ein leeres Repertoire füllst du einfach beim Trainieren: In jeder neuen Stellung legst du deinen Zug fest.
+            {newColor === 'black' && ' Mit Schwarz braucht der Gegner dafür die Lichess-Datenbank (oder importiere eine PGN).'}
+          </p>
+          <button className="primary" type="submit" disabled={!newName.trim()}>
+            Anlegen
+          </button>
+        </form>
+      </details>
 
-      <ImportForm onAdd={store.addCustomLine} />
+      <ImportForm repertoires={store.repertoires} onImport={store.importLine} />
+      <SettingsPanel settings={store.settings} onChange={store.updateSettings} />
 
       <footer className="muted small">
         <button className="link" onClick={() => confirm('Gesamten Lernfortschritt zurücksetzen?') && store.resetProgress()}>

@@ -53,6 +53,7 @@ h2 {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
   color: inherit;
@@ -110,29 +111,6 @@ button.danger:hover {
   border-color: var(--info);
 }
 
-.line-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.line-list li {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.line-button {
-  flex: 1;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  text-align: left;
-  background: var(--bg);
-}
-
 .badge {
   font-size: 0.75rem;
   padding: 2px 8px;
@@ -168,7 +146,9 @@ details[open] summary::before {
   margin-top: 12px;
 }
 .import-form input:not([type='radio']),
-.import-form textarea {
+.import-form textarea,
+.inline-form input,
+select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -240,4 +220,116 @@ details[open] summary::before {
 
 footer {
   text-align: center;
+}
+
+.card > h2 + p {
+  margin: 6px 0 12px;
+}
+
+.login-card,
+.rep-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rep-footer {
+  margin-top: 4px;
+}
+.badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.manual-token {
+  margin-top: 12px;
+}
+.manual-token summary::before {
+  content: none;
+}
+.manual-token ol {
+  padding-left: 20px;
+}
+.manual-token a {
+  color: var(--info);
+}
+.inline-form {
+  display: flex;
+  gap: 8px;
+}
+.inline-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+}
+.setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.chip.active {
+  background: rgba(106, 168, 79, 0.2);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.opening-name {
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+.explorer-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.explorer-table td {
+  padding: 4px 6px 4px 0;
+  white-space: nowrap;
+}
+.explorer-table tr.mine .san {
+  color: var(--accent);
+  font-weight: 600;
+}
+.explorer-table .san {
+  font-family: ui-monospace, monospace;
+}
+.explorer-table .share,
+.explorer-table .count {
+  text-align: right;
+}
+.explorer-table .wdl {
+  width: 40%;
+}
+.wdl-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.wdl-bar .w {
+  background: #eee;
+}
+.wdl-bar .d {
+  background: #888;
+}
+.wdl-bar .b {
+  background: #333;
 }

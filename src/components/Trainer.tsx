@@ -1,65 +1,93 @@
 import { Chess, type Square } from 'chess.js'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Chessboard, type Arrow } from 'react-chessboard'
-import type { Line } from '../lib/types'
+import { chooseOpponentMove } from '../lib/opponent'
+import { positionAfter, positionKey } from '../lib/repertoire'
+import type { Store } from '../lib/storage'
+import type { LineProgress, Repertoire, Settings } from '../lib/types'
+import { ExplorerPanel } from './ExplorerPanel'
 
 const OPPONENT_DELAY_MS = 450
 
 type Props = {
-  line: Line
-  onComplete: (mistakes: number) => void
+  repertoire: Repertoire
+  progress: Record<string, LineProgress>
+  settings: Settings
+  token: string | null
+  store: Pick<Store, 'setUserMove' | 'addOpponentMove' | 'recordCard'>
+  onAuthError: () => void
   onNext: () => void
   onExit: () => void
 }
 
 type Feedback = { kind: 'info' | 'good' | 'bad'; text: string }
+type Stats = { correct: number; mistakes: number; learned: number }
 
-function positionAfter(moves: string[], ply: number): Chess {
-  const game = new Chess()
-  for (const san of moves.slice(0, ply)) game.move(san)
-  return game
-}
-
-export function Trainer({ line, onComplete, onNext, onExit }: Props) {
-  const [ply, setPly] = useState(0)
-  const [mistakes, setMistakes] = useState(0)
-  const [feedback, setFeedback] = useState<Feedback>({ kind: 'info', text: 'Spiele den nächsten Zug deines Repertoires.' })
+export function Trainer({ repertoire: rep, progress, settings, token, store, onAuthError, onNext, onExit }: Props) {
+  const [history, setHistory] = useState<string[]>([])
+  const [feedback, setFeedback] = useState<Feedback>({ kind: 'info', text: 'Los geht’s!' })
   const [hint, setHint] = useState<Arrow | null>(null)
   const [selected, setSelected] = useState<Square | null>(null)
-  const completedRef = useRef(false)
+  const [failedKeys, setFailedKeys] = useState<Set<string>>(new Set())
+  const [wrongMove, setWrongMove] = useState<string | null>(null)
+  const [stats, setStats] = useState<Stats>({ correct: 0, mistakes: 0, learned: 0 })
+  const [stopReason, setStopReason] = useState<string | null>(null)
 
-  const game = useMemo(() => positionAfter(line.moves, ply), [line.moves, ply])
-  const done = ply >= line.moves.length
-  const userTurn = !done && (game.turn() === 'w') === (line.color === 'white')
-  const expected = done ? null : line.moves[ply]
+  const game = useMemo(() => positionAfter(history), [history])
+  const key = positionKey(game)
+  const userMovesPlayed = history.filter((_, i) => (i % 2 === 0) === (rep.color === 'white')).length
+  const userToMove = (game.turn() === 'w') === (rep.color === 'white')
+  const endReason =
+    stopReason ??
+    (game.isGameOver()
+      ? 'Partie beendet.'
+      : userToMove && userMovesPlayed >= settings.maxDepth
+        ? `Maximale Tiefe (${settings.maxDepth} Züge) erreicht.`
+        : null)
+  const done = endReason !== null
+  const userTurn = !done && userToMove
+  const expected = userTurn ? rep.userMoves[key] : undefined
+  const learning = userTurn && !expected
   const lastMove = game.history({ verbose: true }).at(-1)
 
-  // Gegnerzug automatisch ausführen.
+  // Gegnerzug wählen und ausführen.
   useEffect(() => {
     if (done || userTurn) return
-    const timer = setTimeout(() => setPly((p) => p + 1), OPPONENT_DELAY_MS)
-    return () => clearTimeout(timer)
-  }, [done, userTurn])
+    let cancelled = false
+    const started = Date.now()
+    chooseOpponentMove(game, rep, progress, settings, token).then(async ({ choice, warning }) => {
+      if (cancelled) return
+      if (warning?.kind === 'auth') onAuthError()
+      if (!choice) {
+        setStopReason(
+          warning
+            ? `${warning.message} Keine bekannten Gegnerzüge mehr.`
+            : token
+              ? 'Ende der Variante – keine weiteren Partien in der Datenbank.'
+              : 'Ende deines Repertoires. Melde dich bei Lichess an, um Nebenvarianten zu trainieren.',
+        )
+        return
+      }
+      await new Promise((r) => setTimeout(r, Math.max(0, OPPONENT_DELAY_MS - (Date.now() - started))))
+      if (cancelled) return
+      store.addOpponentMove(rep.id, key, choice.san)
+      setHistory((h) => [...h, choice.san])
+      const share = choice.share !== null ? ` (${Math.round(choice.share * 100)} % der Partien)` : ''
+      setFeedback({ kind: 'info', text: `Gegner spielt ${choice.san}${share}.${warning ? ` ${warning.message}` : ''}` })
+    })
+    return () => {
+      cancelled = true
+    }
+    // Nur bei neuer Stellung neu auslösen: rep/progress ändern sich durch die eigenen Züge mit
+    // und würden den gerade gewählten Gegnerzug sonst abbrechen.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, done, userTurn])
 
-  // Ergebnis einmal pro Durchlauf melden.
-  useEffect(() => {
-    if (!done || completedRef.current) return
-    completedRef.current = true
-    onComplete(mistakes)
-    setFeedback(
-      mistakes === 0
-        ? { kind: 'good', text: 'Perfekt! Linie fehlerfrei gespielt.' }
-        : { kind: 'bad', text: `Linie beendet – ${mistakes} Fehler. Sie kommt morgen wieder.` },
-    )
-  }, [done, mistakes, onComplete])
-
-  function restart() {
-    completedRef.current = false
-    setPly(0)
-    setMistakes(0)
-    setHint(null)
-    setSelected(null)
-    setFeedback({ kind: 'info', text: 'Spiele den nächsten Zug deines Repertoires.' })
+  function markFailed() {
+    if (failedKeys.has(key)) return
+    store.recordCard(rep.id, key, false)
+    setFailedKeys(new Set(failedKeys).add(key))
+    setStats((s) => ({ ...s, mistakes: s.mistakes + 1 }))
   }
 
   function expectedArrow(): Arrow | null {
@@ -68,28 +96,55 @@ export function Trainer({ line, onComplete, onNext, onExit }: Props) {
     return { startSquare: move.from, endSquare: move.to, color: 'rgba(40, 160, 90, 0.85)' }
   }
 
+  function play(san: string) {
+    setHint(null)
+    setWrongMove(null)
+    setHistory((h) => [...h, san])
+  }
+
   function tryMove(from: Square, to: Square): boolean {
     setSelected(null)
-    if (!userTurn || !expected) return false
+    if (!userTurn) return false
     const candidates = game.moves({ square: from, verbose: true }).filter((m) => m.to === to)
     if (candidates.length === 0) return false // illegaler Zug, zählt nicht als Fehler
+    const move = candidates.find((m) => m.san === expected) ?? candidates.find((m) => !m.promotion || m.promotion === 'q')!
 
-    if (candidates.some((m) => m.san === expected)) {
-      setHint(null)
-      setFeedback({ kind: 'good', text: `Richtig: ${expected}` })
-      setPly((p) => p + 1)
+    if (!expected) {
+      store.setUserMove(rep.id, key, move.san)
+      store.recordCard(rep.id, key, true)
+      setStats((s) => ({ ...s, learned: s.learned + 1 }))
+      setFeedback({ kind: 'good', text: `Neu im Repertoire: ${move.san}` })
+      play(move.san)
       return true
     }
 
-    setMistakes((m) => m + 1)
+    if (move.san === expected) {
+      if (!failedKeys.has(key)) {
+        store.recordCard(rep.id, key, true)
+        setStats((s) => ({ ...s, correct: s.correct + 1 }))
+      }
+      setFeedback({ kind: 'good', text: `Richtig: ${expected}` })
+      play(move.san)
+      return true
+    }
+
+    markFailed()
     setHint(expectedArrow())
-    setFeedback({ kind: 'bad', text: `${candidates[0].san} ist nicht dein Repertoirezug. Richtig: ${expected}` })
+    setWrongMove(move.san)
+    setFeedback({ kind: 'bad', text: `${move.san} ist nicht dein Repertoirezug. Richtig: ${expected}` })
     return false
   }
 
+  function adoptWrongMove() {
+    if (!wrongMove) return
+    store.setUserMove(rep.id, key, wrongMove)
+    setFeedback({ kind: 'info', text: `Repertoire geändert: Hier spielst du jetzt ${wrongMove}.` })
+    play(wrongMove)
+  }
+
   function showHint() {
-    if (!userTurn) return
-    setMistakes((m) => m + 1)
+    if (!expected) return
+    markFailed()
     setHint(expectedArrow())
     setFeedback({ kind: 'info', text: `Tipp: ${expected} (zählt als Fehler)` })
   }
@@ -98,11 +153,8 @@ export function Trainer({ line, onComplete, onNext, onExit }: Props) {
     if (!userTurn) return
     const piece = game.get(square)
     const ownPiece = piece && piece.color === game.turn()
-    if (selected && !ownPiece) {
-      tryMove(selected, square)
-    } else {
-      setSelected(ownPiece && square !== selected ? square : null)
-    }
+    if (selected && !ownPiece) tryMove(selected, square)
+    else setSelected(ownPiece && square !== selected ? square : null)
   }
 
   const squareStyles: Record<string, React.CSSProperties> = {}
@@ -120,13 +172,22 @@ export function Trainer({ line, onComplete, onNext, onExit }: Props) {
     }
   }
 
+  const status: Feedback = done
+    ? {
+        kind: stats.mistakes === 0 ? 'good' : 'bad',
+        text: `${endReason} ${stats.correct} richtig, ${stats.mistakes} Fehler, ${stats.learned} neu gelernt.`,
+      }
+    : learning
+      ? { kind: 'info', text: 'Neue Stellung! Was spielst du hier? Dein Zug wird ins Repertoire übernommen.' }
+      : feedback
+
   return (
     <div className="trainer">
       <header className="trainer-header">
         <button className="link" onClick={onExit}>← Übersicht</button>
         <div>
-          <div className="muted small">{line.repertoire}</div>
-          <h2>{line.name}</h2>
+          <div className="muted small">Training · {rep.color === 'white' ? 'Weiß' : 'Schwarz'}</div>
+          <h2>{rep.name}</h2>
         </div>
       </header>
 
@@ -135,7 +196,7 @@ export function Trainer({ line, onComplete, onNext, onExit }: Props) {
           options={{
             id: 'trainer',
             position: game.fen(),
-            boardOrientation: line.color,
+            boardOrientation: rep.color,
             allowDragging: userTurn,
             arrows: hint ? [hint] : [],
             squareStyles,
@@ -147,27 +208,38 @@ export function Trainer({ line, onComplete, onNext, onExit }: Props) {
         />
       </div>
 
-      <div className={`feedback ${feedback.kind}`}>{feedback.text}</div>
-
-      <div className="progress-bar" aria-label="Fortschritt">
-        <div style={{ width: `${(ply / line.moves.length) * 100}%` }} />
-      </div>
+      <div className={`feedback ${status.kind}`}>{status.text}</div>
 
       <div className="actions">
         {done ? (
           <>
-            <button onClick={restart}>Nochmal</button>
-            <button className="primary" onClick={onNext}>Nächste Linie</button>
+            <button onClick={onExit}>Übersicht</button>
+            <button className="primary" onClick={onNext}>Nächste Runde</button>
           </>
         ) : (
           <>
-            <button onClick={showHint} disabled={!userTurn}>Tipp</button>
-            <button onClick={restart}>Neu starten</button>
+            {wrongMove ? (
+              <button onClick={adoptWrongMove}>{wrongMove} übernehmen</button>
+            ) : (
+              <button onClick={showHint} disabled={!expected}>Tipp</button>
+            )}
+            <button onClick={() => setStopReason('Runde beendet.')}>Beenden</button>
           </>
         )}
       </div>
 
-      <MoveList moves={line.moves.slice(0, ply)} />
+      <MoveList moves={history} />
+
+      {/* Statistik nur zeigen, wenn sie die Antwort nicht verrät. */}
+      {(learning || done || !userTurn) && (
+        <ExplorerPanel
+          fen={game.fen()}
+          settings={settings}
+          token={token}
+          onAuthError={onAuthError}
+          repertoireMove={rep.userMoves[key]}
+        />
+      )}
     </div>
   )
 }
